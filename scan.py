@@ -13,13 +13,13 @@ WORK_DIR = "/var/lib/sanewebscan"
 BIND_ADDR = "127.0.0.1"
 BIND_PORT = 9080
 APP_ROOT = "/"
-LOCK_FILE = "%s/lockfile" % WORK_DIR
+LOCK_FILE = f"{WORK_DIR}/lockfile"
 LOCK_TTL = 300
 SCANIMAGE = '/usr/bin/scanimage'
 DEVICE = 'airscan:e0:HP140w'
-NFO_FILE = "%s/filename.nfo" % WORK_DIR
-JPG_FILE = "%s/scan.jpg" % WORK_DIR
-PDF_FILE = "%s/batch.pdf" % WORK_DIR
+NFO_FILE = f"{WORK_DIR}/filename.nfo"
+JPG_FILE = f"{WORK_DIR}/scan.jpg"
+PDF_FILE = f"{WORK_DIR}/batch.pdf"
 RESOLUTION = 300
 BUFFER = 512
 
@@ -68,7 +68,7 @@ def sanitize_filename(name):
     return name[:64]
 
 def acquire_lock():
-    logger.debug(f"Creating lock file {LOCK_FILE}")
+    logger.debug("Creating lock file %s", LOCK_FILE)
     try:
         fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
@@ -109,7 +109,7 @@ def read_filename(environ):
 
 
 def run_async(cmd):
-    logger.debug("Executing: {}".format(cmd))
+    logger.debug("Executing: %s", cmd)
     try:
         proc = subprocess.Popen(
             cmd.split(),
@@ -119,7 +119,7 @@ def run_async(cmd):
         )
         logger.debug("Popen executed")
     except Exception as e:
-        logger.debug(f"Popen exception: {e}")
+        logger.debug("Popen exception: %s", e)
         release_lock()
 
     pid = os.fork()
@@ -131,7 +131,7 @@ def run_async(cmd):
                 logger.debug("Exit clode 0 lock released")
                 release_lock()
             else:
-                logger.debug("stderr: {} locak released".format(stderr))
+                logger.debug("stderr: %s lock released", stderr)
                 release_lock()
         finally:
             os._exit(0)
@@ -140,7 +140,7 @@ def run_async(cmd):
 def app(environ, start_response):
     path = environ.get("PATH_INFO", "")
     method = environ.get("REQUEST_METHOD")
-    client = environ.get("HTTP_X_FORWARDED_FOR")
+    # client = environ.get("HTTP_X_FORWARDED_FOR")
 
     # logger.debug("Environment: {}".format(environ))
     # logger.debug("uwsgi client: {}".format(client))
@@ -223,11 +223,10 @@ def app(environ, start_response):
             cur_file = f"{WORK_DIR}/batch{i:02d}.jpg"
             if os.path.exists(cur_file):
                 try:
-                    logger.debug(f"Removing {cur_file}")
+                    logger.debug("Removing %s", cur_file)
                     os.remove(cur_file)
                 except:
-                    logger.debug(f"Can not remove {cur_file}")
-                    pass
+                    logger.debug("Can not remove %s", cur_file)
 
         logger.debug("Cleanup completed")
         return response(start_response, status="200 OK")
@@ -245,13 +244,14 @@ def app(environ, start_response):
                 f.write(filename)
             logger.debug("/scan filename.nfo created")
 
-            cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} --buffer-size={BUFFER} --output-file={JPG_FILE}"
-            logger.debug("/scan call: {}".format(cmd))
+            cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
+                --buffer-size={BUFFER} --output-file={JPG_FILE}"
+            logger.debug("/scan call: %s", cmd)
             run_async(cmd)
 
             return response(start_response, status="302 Found", headers=[("Location", "scan.html")])
         except Exception as e:
-            logger.debug("/scan failed: {}".format(e))
+            logger.debug("/scan failed: %s", e)
             return response(start_response, status="500 Internal Server Error")
 
     # /batch
@@ -265,10 +265,12 @@ def app(environ, start_response):
             with open(NFO_FILE, "w") as f:
                 f.write(filename)
 
-            cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} --buffer-size={BUFFER} --output-file={WORK_DIR}/batch00.jpg"
+            cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
+                --buffer-size={BUFFER} --output-file={WORK_DIR}/batch00.jpg"
             run_async(cmd)
 
-            return response(start_response, status="302 Found", headers=[("Location", "batch.html")])
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "batch.html")])
         except:
             return response(start_response, status="500 Internal Server Error")
 
@@ -317,7 +319,8 @@ def app(environ, start_response):
         if not acquire_lock():
             return response(start_response, status="202 Accepted")
 
-        cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} --buffer-size={BUFFER} --output-file={output}"
+        cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
+            --buffer-size={BUFFER} --output-file={output}"
         run_async(cmd)
 
         return response(start_response, status="202 Accepted")
@@ -362,7 +365,8 @@ def app(environ, start_response):
             for i in range(100)
             if os.path.exists(f"{WORK_DIR}/batch{i:02d}.jpg")
         ])
-        cmd = "convert %s %s" % (' '.join(files), PDF_FILE)
+        file_names = ' '.join(files)
+        cmd = f"convert {file_names} {PDF_FILE}"
         run_async(cmd)
 
         return response(start_response, status="202 Accepted")
