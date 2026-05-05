@@ -217,6 +217,7 @@ def app(environ, start_response):
     # /poll
     if path == "/poll":
 
+        logger.debug("/poll API call triggered")
         if os.path.exists(LOCK_FILE):
             logger.debug("Lock file is in place")
             if is_lock_stale():
@@ -271,7 +272,7 @@ def app(environ, start_response):
                 return response(start_response, status="201 Created")
 
         # cleanup
-        logger.debug("Cleanup phase")
+        logger.debug("Failover cleanup phase")
         safe_remove(TOKEN_FILE, "token file")
         safe_remove(NFO_FILE, "nfo file")
         safe_remove(JPG_FILE, "jpg file")
@@ -281,11 +282,12 @@ def app(environ, start_response):
             if os.path.exists(cur_file):
                 safe_remove(cur_file, "")
 
-        logger.debug("Cleanup completed")
+        logger.debug("Cleanup phase completed")
         return response(start_response, status="200 OK")
 
     # /scan
     if path == "/scan" and method == "POST":
+        logger.debug("/scan API call triggered")
         try:
             filename = sanitize_filename(read_filename(environ))
 
@@ -317,14 +319,25 @@ def app(environ, start_response):
 
     # /batch
     if path == "/batch" and method == "POST":
+        logger.debug("/batch API call triggered")
         try:
             filename = sanitize_filename(read_filename(environ))
 
             if not acquire_lock():
-                return response(start_response, status="202 Accepted")
+                logger.debug("/batch lock not acquired, try again")
+                safe_remove(LOCK_FILE, "lock file")
+                return response(start_response, status="302 Found", headers=[("Location", \
+                    "index.html")])
 
             with open(NFO_FILE, "w", encoding="utf-8") as f:
                 f.write(filename)
+            logger.debug("/batch filename.nfo created")
+
+            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                alphabet = string.ascii_letters + string.digits
+                token = ''.join(random.choice(alphabet) for _ in range(32))
+                f.write(token)
+            logger.debug("/batch token.file created")
 
             cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
                 --buffer-size={BUFFER} --output-file={WORK_DIR}/batch00.jpg"
@@ -338,6 +351,7 @@ def app(environ, start_response):
     # /next
     if path == "/next":
 
+        logger.debug("/next API call triggered")
         if os.path.exists(LOCK_FILE):
             if is_lock_stale():
                 safe_remove(LOCK_FILE, "lock file")
@@ -380,6 +394,7 @@ def app(environ, start_response):
     # /done
     if path == "/done":
 
+        logger.debug("/done API call triggered")
         if os.path.exists(LOCK_FILE):
             if is_lock_stale():
                 safe_remove(LOCK_FILE, "lock file")
