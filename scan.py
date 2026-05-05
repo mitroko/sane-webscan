@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Simple Web scanning application based on the SANE/ scaimage"""
 
 import os
 import sys
@@ -32,13 +33,17 @@ logger = logging.getLogger("SANE Web Scan")
 
 
 class WebScanHandler(WSGIRequestHandler):
+    """Own class to handle X-Proxy headers for logging"""
+
     def address_string(self):
+        """Calculate address_string"""
         forwarded = self.headers.get('X-Forwarded-For')
         if forwarded:
             return forwarded.split(',')[0].strip()
         return self.client_address[0]
 
     def log_message(self, format, *args):
+        """Calculate client_ip and drop the log line"""
         forwarded = self.headers.get('X-Forwarded-For')
         user = self.headers.get('X-Forwarded-User', '-')
         if forwarded:
@@ -50,6 +55,7 @@ class WebScanHandler(WSGIRequestHandler):
         sys.stderr.flush()
 
 def sanitize_filename(name):
+    """Check the filename and replace ambiguos chars"""
     if not name:
         return "scan"
 
@@ -68,6 +74,7 @@ def sanitize_filename(name):
     return name[:64]
 
 def acquire_lock():
+    """Simple lock acquiring function based on a file"""
     logger.debug("Creating lock file %s", LOCK_FILE)
     try:
         fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -79,46 +86,51 @@ def acquire_lock():
         return False
 
 def release_lock():
+    """Simple lock file releasing function"""
     try:
         if os.path.exists(LOCK_FILE):
             os.remove(LOCK_FILE)
-    except:
+    except IOError:
         pass
 
 def is_lock_stale():
+    """Stale lock checker"""
     try:
         return (time.time() - os.path.getmtime(LOCK_FILE)) > LOCK_TTL
-    except:
+    except IOError:
         return False
 
 def response(start_response, status="200 OK", body=b"", headers=[]):
+    """Return the data to a client"""
     start_response(status, headers)
     return [body]
 
 
 def read_filename(environ):
+    """Get the filename from the environment of the wsgi application"""
     try:
         size = int(environ.get("CONTENT_LENGTH", 0))
         data = environ["wsgi.input"].read(size).decode()
         for part in data.split("&"):
             if part.startswith("filename="):
                 return part.split("=")[1] or "scan"
-    except:
+    except KeyError:
         pass
     return "scan"
 
 
 def run_async(cmd):
+    """Perform asynchronous process call. Fire and forget"""
     logger.debug("Executing: %s", cmd)
     try:
-        proc = subprocess.Popen(
+        with subprocess.Popen(
             cmd.split(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True
-        )
-        logger.debug("Popen executed")
-    except Exception as e:
+        ) as proc:
+            logger.debug("Popen executed")
+    except ChildProcessError as e:
         logger.debug("Popen exception: %s", e)
         release_lock()
 
@@ -128,8 +140,9 @@ def run_async(cmd):
             logger.debug("Proc communication started")
             stdout, stderr = proc.communicate()
             if proc.returncode == 0:
-                logger.debug("Exit clode 0 lock released")
+                logger.debug("stdout: %s", stdout)
                 release_lock()
+                logger.debug("Exit code 0 lock released")
             else:
                 logger.debug("stderr: %s lock released", stderr)
                 release_lock()
@@ -138,6 +151,7 @@ def run_async(cmd):
 
 
 def app(environ, start_response):
+    """Main app itself for managing scan requests"""
     path = environ.get("PATH_INFO", "")
     method = environ.get("REQUEST_METHOD")
     # client = environ.get("HTTP_X_FORWARDED_FOR")
@@ -167,9 +181,9 @@ def app(environ, start_response):
                 logger.debug("jpg file has proper size")
                 try:
                     logger.debug("reading filename from nfo")
-                    with open(NFO_FILE) as f:
+                    with open(NFO_FILE, encoding="utf-8") as f:
                         name = f.read().strip()
-                except:
+                except IOError:
                     logger.debug("invalid filename replaced with ''")
                     name = ""
                 if name:
@@ -205,19 +219,19 @@ def app(environ, start_response):
             logger.debug("nfo file exists - removing")
             try:
                 os.remove(NFO_FILE)
-            except:
+            except IOError:
                 logger.debug("Can not remove nfo file")
         if os.path.exists(JPG_FILE):
             logger.debug("jpg file exists - removing")
             try:
                 os.remove(JPG_FILE)
-            except:
+            except IOError:
                 logger.debug("Can not remove jpg file")
         if os.path.exists(PDF_FILE):
             logger.debug("pdf file exists - removing")
             try:
                 os.remove(PDF_FILE)
-            except:
+            except IOError:
                 logger.debug("Can not remove pdf file")
         for i in range(100):
             cur_file = f"{WORK_DIR}/batch{i:02d}.jpg"
@@ -225,7 +239,7 @@ def app(environ, start_response):
                 try:
                     logger.debug("Removing %s", cur_file)
                     os.remove(cur_file)
-                except:
+                except IOError:
                     logger.debug("Can not remove %s", cur_file)
 
         logger.debug("Cleanup completed")
@@ -240,7 +254,7 @@ def app(environ, start_response):
                 logger.debug("/scan lock not acquired")
                 return response(start_response, status="202 Accepted")
 
-            with open(NFO_FILE, "w") as f:
+            with open(NFO_FILE, "w", encoding="utf-8") as f:
                 f.write(filename)
             logger.debug("/scan filename.nfo created")
 
@@ -250,7 +264,7 @@ def app(environ, start_response):
             run_async(cmd)
 
             return response(start_response, status="302 Found", headers=[("Location", "scan.html")])
-        except Exception as e:
+        except RuntimeError as e:
             logger.debug("/scan failed: %s", e)
             return response(start_response, status="500 Internal Server Error")
 
@@ -262,7 +276,7 @@ def app(environ, start_response):
             if not acquire_lock():
                 return response(start_response, status="202 Accepted")
 
-            with open(NFO_FILE, "w") as f:
+            with open(NFO_FILE, "w", encoding="utf-8") as f:
                 f.write(filename)
 
             cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
@@ -271,7 +285,7 @@ def app(environ, start_response):
 
             return response(start_response, status="302 Found", headers=[("Location", \
                 "batch.html")])
-        except:
+        except RuntimeError:
             return response(start_response, status="500 Internal Server Error")
 
     # /next
@@ -297,7 +311,7 @@ def app(environ, start_response):
             for fn in files:
                 try:
                     os.remove(fn)
-                except:
+                except IOError:
                     pass
             return response(start_response, status="200 OK")
 
@@ -305,11 +319,11 @@ def app(environ, start_response):
             for fn in files:
                 try:
                     os.remove(fn)
-                except:
+                except IOError:
                     pass
             try:
                 os.remove(NFO_FILE)
-            except:
+            except IOError:
                 pass
             return response(start_response, status="200 OK")
 
@@ -336,9 +350,9 @@ def app(environ, start_response):
         if os.path.exists(PDF_FILE):
             if os.path.exists(NFO_FILE):
                 try:
-                    with open(NFO_FILE) as f:
+                    with open(NFO_FILE, encoding="utf-8") as f:
                         name = f.read().strip()
-                except:
+                except IOError:
                     name = ""
                 if name:
                     with open(PDF_FILE, "rb") as f:
@@ -353,7 +367,7 @@ def app(environ, start_response):
             try:
                 os.remove(NFO_FILE)
                 os.remove(PDF_FILE)
-            except:
+            except IOError:
                 pass
             return response(start_response, status="200 OK")
 
