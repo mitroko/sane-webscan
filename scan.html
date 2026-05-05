@@ -2,6 +2,7 @@
 <html>
 <head>
   <title>SANE Web scan</title>
+  <meta charset="UTF-8">
   <script>
     async function pollStatus() {
       try {
@@ -31,6 +32,9 @@
               filename = disposition.split("filename=")[1].replace(/"/g, "");
             }
 
+            // cleanup cookie
+            let cleanupCookie = res.headers.get("X-Cleanup-Cookie");
+
             // Trigger download
             let url = window.URL.createObjectURL(blob);
             let a = document.createElement("a");
@@ -41,6 +45,17 @@
             a.remove();
 
             window.URL.revokeObjectURL(url);
+
+            // call cleanup API
+            if (cleanupCookie) {
+                await fetch('/cleanup', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: 'cleaner_token=' + encodeURIComponent(cleanupCookie)
+                });
+            }
 
             // Redirect after download
             window.location.href = "/index.html";

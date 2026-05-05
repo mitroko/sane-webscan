@@ -8,6 +8,8 @@ import time
 import logging
 import subprocess
 import unicodedata
+import random
+import string
 from wsgiref.simple_server import make_server, WSGIRequestHandler
 
 WORK_DIR = "/var/lib/sanewebscan"
@@ -19,6 +21,7 @@ LOCK_TTL = 300
 SCANIMAGE = '/usr/bin/scanimage'
 DEVICE = 'airscan:e0:HP140w'
 NFO_FILE = f"{WORK_DIR}/filename.nfo"
+TOKEN_FILE = f"{WORK_DIR}/token.file"
 JPG_FILE = f"{WORK_DIR}/scan.jpg"
 PDF_FILE = f"{WORK_DIR}/batch.pdf"
 RESOLUTION = 300
@@ -85,14 +88,6 @@ def acquire_lock():
         logger.debug("Lock file was not created")
         return False
 
-def release_lock():
-    """Simple lock file releasing function"""
-    try:
-        if os.path.exists(LOCK_FILE):
-            os.remove(LOCK_FILE)
-    except IOError:
-        pass
-
 def is_lock_stale():
     """Stale lock checker"""
     try:
@@ -105,6 +100,17 @@ def response(start_response, status="200 OK", body=b"", headers=[]):
     start_response(status, headers)
     return [body]
 
+def read_token(environ):
+    """Get the filename cookie from the environment of the wsgi application"""
+    try:
+        size = int(environ.get("CONTENT_LENGTH", 0))
+        data = environ["wsgi.input"].read(size).decode()
+        for part in data.split("&"):
+            if part.startswith("cleaner_token="):
+                return part.split("=")[1] or ""
+    except KeyError:
+        pass
+    return ""
 
 def read_filename(environ):
     """Get the filename from the environment of the wsgi application"""
@@ -123,16 +129,16 @@ def run_async(cmd):
     """Perform asynchronous process call. Fire and forget"""
     logger.debug("Executing: %s", cmd)
     try:
-        with subprocess.Popen(
+        proc = subprocess.Popen(
             cmd.split(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True
-        ) as proc:
-            logger.debug("Popen executed")
+        )
+        logger.debug("Popen executed")
     except ChildProcessError as e:
         logger.debug("Popen exception: %s", e)
-        release_lock()
+        safe_remove(LOCK_FILE, "lock file")
 
     pid = os.fork()
     if pid == 0:
@@ -140,15 +146,29 @@ def run_async(cmd):
             logger.debug("Proc communication started")
             stdout, stderr = proc.communicate()
             if proc.returncode == 0:
-                logger.debug("stdout: %s", stdout)
-                release_lock()
+                logger.debug("Subprocess call [stdout]: %s", stdout.decode("utf-8"))
+                safe_remove(LOCK_FILE, "lock file")
                 logger.debug("Exit code 0 lock released")
             else:
-                logger.debug("stderr: %s lock released", stderr)
-                release_lock()
+                logger.debug("Subprocess call [stderr]: %s lock released", stderr.decode("utf-8"))
+                safe_remove(LOCK_FILE, "lock file")
         finally:
             os._exit(0)
 
+def safe_remove(fp, comment=""):
+    """Check if file exists and remove it"""
+
+    if len(comment) > 0:
+        to_log = comment
+    else:
+        to_log = str(fp)
+
+    if os.path.exists(fp):
+        logger.debug("%s exists - removing", to_log)
+        try:
+            os.remove(fp)
+        except IOError:
+            logger.debug("Can not remove %s", to_log)
 
 def app(environ, start_response):
     """Main app itself for managing scan requests"""
@@ -165,6 +185,35 @@ def app(environ, start_response):
     if path == "/healthz":
         return response(start_response, status="200 OK")
 
+    # /cleanup
+    if path == "/cleanup" and method == "POST":
+        logger.debug("/cleanup API call triggered")
+        try:
+            logger.debug("Reading token from the client")
+            cleaner_token = read_token(environ)
+
+            if len(cleaner_token) == 0:
+                logger.debug("No token or 0 size token sent")
+                return response(start_response, status="401 Unauthorized")
+
+            logger.debug("Reading token from the file")
+            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+                token = f.read().strip()
+
+            if not cleaner_token == token:
+                logger.debug("Improper token sent, rejecting")
+                return response(start_response, status="401 Unauthorized")
+
+            logger.debug("Cleanup token accepted, removing files")
+            safe_remove(TOKEN_FILE, "token file")
+            safe_remove(NFO_FILE, "nfo file")
+            safe_remove(JPG_FILE, "jpg file")
+            safe_remove(PDF_FILE, "pdf file")
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
+        except RuntimeError:
+            return response(start_response, status="500 Internal Server Error")
+
     # /poll
     if path == "/poll":
 
@@ -172,7 +221,7 @@ def app(environ, start_response):
             logger.debug("Lock file is in place")
             if is_lock_stale():
                 logger.debug("Lock file is stale, releasing")
-                release_lock()
+                safe_remove(LOCK_FILE, "lock file")
             return response(start_response, status="202 Accepted")
 
         if os.path.exists(JPG_FILE) and os.path.exists(NFO_FILE):
@@ -186,7 +235,14 @@ def app(environ, start_response):
                 except IOError:
                     logger.debug("invalid filename replaced with ''")
                     name = ""
-                if name:
+                try:
+                    logger.debug("reading token file")
+                    with open(TOKEN_FILE, encoding="utf-8") as f:
+                        token = f.read().strip()
+                except IOError:
+                    logger.debug("Cannot read token from file")
+                    token = ""
+                if name and token:
                     logger.debug("file is returned to a client")
                     with open(JPG_FILE, "rb") as f:
                         return response(
@@ -195,6 +251,7 @@ def app(environ, start_response):
                             body=f.read(),
                             headers=[("Content-Type", "image/jpeg"),
                              ("Cache-Control", "no-store"),
+                             ("X-Cleanup-Cookie", token),
                              ("Content-Disposition", f'attachment; filename="{name}.jpg"')]
                         )
             logger.debug("file not returned to a client, probably broken")
@@ -215,32 +272,14 @@ def app(environ, start_response):
 
         # cleanup
         logger.debug("Cleanup phase")
-        if os.path.exists(NFO_FILE):
-            logger.debug("nfo file exists - removing")
-            try:
-                os.remove(NFO_FILE)
-            except IOError:
-                logger.debug("Can not remove nfo file")
-        if os.path.exists(JPG_FILE):
-            logger.debug("jpg file exists - removing")
-            try:
-                os.remove(JPG_FILE)
-            except IOError:
-                logger.debug("Can not remove jpg file")
-        if os.path.exists(PDF_FILE):
-            logger.debug("pdf file exists - removing")
-            try:
-                os.remove(PDF_FILE)
-            except IOError:
-                logger.debug("Can not remove pdf file")
+        safe_remove(TOKEN_FILE, "token file")
+        safe_remove(NFO_FILE, "nfo file")
+        safe_remove(JPG_FILE, "jpg file")
+        safe_remove(PDF_FILE, "pdf file")
         for i in range(100):
             cur_file = f"{WORK_DIR}/batch{i:02d}.jpg"
             if os.path.exists(cur_file):
-                try:
-                    logger.debug("Removing %s", cur_file)
-                    os.remove(cur_file)
-                except IOError:
-                    logger.debug("Can not remove %s", cur_file)
+                safe_remove(cur_file, "")
 
         logger.debug("Cleanup completed")
         return response(start_response, status="200 OK")
@@ -251,12 +290,20 @@ def app(environ, start_response):
             filename = sanitize_filename(read_filename(environ))
 
             if not acquire_lock():
-                logger.debug("/scan lock not acquired")
-                return response(start_response, status="202 Accepted")
+                logger.debug("/scan lock not acquired, try again")
+                safe_remove(LOCK_FILE, "lock file")
+                return response(start_response, status="302 Found", headers=[("Location", \
+                    "index.html")])
 
             with open(NFO_FILE, "w", encoding="utf-8") as f:
                 f.write(filename)
             logger.debug("/scan filename.nfo created")
+
+            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                alphabet = string.ascii_letters + string.digits
+                token = ''.join(random.choice(alphabet) for _ in range(32))
+                f.write(token)
+            logger.debug("/scan token.file created")
 
             cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
                 --buffer-size={BUFFER} --output-file={JPG_FILE}"
@@ -293,7 +340,7 @@ def app(environ, start_response):
 
         if os.path.exists(LOCK_FILE):
             if is_lock_stale():
-                release_lock()
+                safe_remove(LOCK_FILE, "lock file")
             return response(start_response, status="202 Accepted")
 
         files = []
@@ -309,22 +356,13 @@ def app(environ, start_response):
 
         if not os.path.exists(NFO_FILE):
             for fn in files:
-                try:
-                    os.remove(fn)
-                except IOError:
-                    pass
+                safe_remove(fn, "")
             return response(start_response, status="200 OK")
 
         if files and os.path.getsize(files[-1]) == 0:
             for fn in files:
-                try:
-                    os.remove(fn)
-                except IOError:
-                    pass
-            try:
-                os.remove(NFO_FILE)
-            except IOError:
-                pass
+                safe_remove(fn, "")
+            safe_remove(NFO_FILE, "nfo file")
             return response(start_response, status="200 OK")
 
         next_index = len(files)
@@ -344,7 +382,7 @@ def app(environ, start_response):
 
         if os.path.exists(LOCK_FILE):
             if is_lock_stale():
-                release_lock()
+                safe_remove(LOCK_FILE, "lock file")
             return response(start_response, status="202 Accepted")
 
         if os.path.exists(PDF_FILE):
@@ -365,8 +403,8 @@ def app(environ, start_response):
                              ("Content-Disposition", f'attachment; filename="{name}.pdf"')]
                         )
             try:
-                os.remove(NFO_FILE)
-                os.remove(PDF_FILE)
+                safe_remove(NFO_FILE, "nfo file")
+                safe_remove(PDF_FILE, "pdf file")
             except IOError:
                 pass
             return response(start_response, status="200 OK")
