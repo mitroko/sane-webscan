@@ -1,0 +1,49 @@
+[Unit]
+Description=SANE Web Scan WSGI Service
+After=network.target
+
+[Service]
+Type=simple
+
+PrivateDevices=true
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+
+User=sane-web-scan
+Group=www-data
+
+WorkingDirectory=/var/lib/sanewebscan
+
+Environment=PATH=/usr/bin:/bin
+Environment=HOME=/var/lib/sanewebscan
+Environment=SANE_CONFIG_DIR=/etc/sane.d
+Environment=LC_ALL=C
+
+# Ensure runtime directory exists
+ExecStartPre=/usr/bin/mkdir -p /var/lib/sanewebscan /var/uwsgi/sanewebscan
+ExecStartPre=/usr/bin/chown sane-web-scan:www-data /var/lib/sanewebscan /var/uwsgi/sanewebscan
+ExecStartPre=/usr/bin/chmod 0755 /var/lib/sanewebscan /var/uwsgi/sanewebscan
+ExecStartPre=/usr/bin/chmod 0644 /var/uwsgi/sanewebscan/scan.py
+
+# Start the app
+ExecStart=/usr/bin/python3 /var/uwsgi/sanewebscan/scan.py
+SyslogIdentifier=SANE Web Scan
+
+# Restart policy
+Restart=always
+RestartSec=2
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+# Allow write access only where needed
+ReadWritePaths=/var/lib/sanewebscan
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

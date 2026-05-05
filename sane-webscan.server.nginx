@@ -1,0 +1,64 @@
+server {
+	listen 8080 default_server;
+	listen [::]:8080 default_server;
+
+	root /var/www/html/sanewebscan;
+	index index.html;
+	server_name _;
+
+	location = /index.html {
+		root /var/www/html/sanewebscan;
+	}
+
+	location = /batch.html {
+		root /var/www/html/sanewebscan;
+	}
+
+	location = /scan.html {
+		root /var/www/html/sanewebscan;
+	}
+
+	location = /healthz {
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-User "sane-web-scan";
+		proxy_pass http://127.0.0.1:9080;
+	}
+
+	location = /poll {
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-User "sane-web-scan";
+		proxy_pass http://127.0.0.1:9080;
+	}
+
+	location = /scan {
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-User "sane-web-scan";
+		proxy_pass http://127.0.0.1:9080;
+	}
+
+	location = /batch {
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-User "sane-web-scan";
+		proxy_pass http://127.0.0.1:9080;
+	}
+
+	location = /next {
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-User "sane-web-scan";
+		proxy_pass http://127.0.0.1:9080;
+	}
+
+	location = /done {
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-User "sane-web-scan";
+		proxy_pass http://127.0.0.1:9080;
+	}
+
+	location = / {
+		root /var/www/html/sanewebscan;
+	}
+
+	location / {
+		return 404;
+	}
+}

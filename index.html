@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SANE Web scan</title>
+</head>
+<body>
+  <table width="100%" height="100%">
+    <tr>
+      <td align="center" valign="middle">
+        <form method="POST">
+          <input type="text" name="filename" value="scan"><br><br>
+
+          <button formaction="/scan" formmethod="POST">jpg</button>
+          <button formaction="/batch" formmethod="POST">pdf</button>
+        </form>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
