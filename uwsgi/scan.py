@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Simple Web scanning application based on the SANE/ scaimage"""
+"""
+Simple Web scanning application based on the SANE/ scaimage
+Author: Dzmitry Stremkouski <mitroko@gmail.com>
+License: Apache 2.0
+Released at: 06.05.2025
+"""
+
+# pylint: disable=redefined-builtin
+# pylint: disable=consider-using-with
+# pylint: disable=too-many-statements
+# pylint: disable=too-many-branches
+# pylint: disable=too-many-return-statements
+# pylint: disable=too-many-locals
 
 import os
 import sys
@@ -12,6 +24,7 @@ import random
 import string
 from wsgiref.simple_server import make_server, WSGIRequestHandler
 
+# Configure your own values here
 WORK_DIR = "/var/lib/sanewebscan"
 BIND_ADDR = "127.0.0.1"
 BIND_PORT = 9080
@@ -95,8 +108,10 @@ def is_lock_stale():
     except IOError:
         return False
 
-def response(start_response, status="200 OK", body=b"", headers=[]):
+def response(start_response, status="200 OK", body=b"", headers=None):
     """Return the data to a client"""
+    if headers is None:
+        headers = []
     start_response(status, headers)
     return [body]
 
@@ -124,6 +139,34 @@ def read_filename(environ):
         pass
     return "scan"
 
+
+def run_blocking(cmd):
+    """Perform blocking process call. Wait until it finishes"""
+    logger.debug("Executing: %s", cmd)
+    try:
+        with subprocess.Popen(
+            cmd.split(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True
+        ) as proc:
+            logger.debug("Blocking call executed")
+    except ChildProcessError as e:
+        logger.debug("Blocking call exception: %s", e)
+        safe_remove(LOCK_FILE, "lock file")
+
+    try:
+        logger.debug("Proc communication started")
+        stdout, stderr = proc.communicate()
+        if proc.returncode == 0:
+            logger.debug("Subprocess call [stdout]: %s", stdout.decode("utf-8"))
+            safe_remove(LOCK_FILE, "lock file")
+            logger.debug("Exit code 0 lock released")
+        else:
+            logger.debug("Subprocess call [stderr]: %s lock released", stderr.decode("utf-8"))
+            safe_remove(LOCK_FILE, "lock file")
+    except BrokenPipeError as e:
+        logger.debug("Blocking call exception: %s", e)
 
 def run_async(cmd):
     """Perform asynchronous process call. Fire and forget"""
@@ -256,7 +299,42 @@ def app(environ, start_response):
                              ("Content-Disposition", f'attachment; filename="{name}.jpg"')]
                         )
             logger.debug("file not returned to a client, probably broken")
-            return response(start_response, status="200 OK")
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
+
+        if os.path.exists(PDF_FILE) and os.path.exists(NFO_FILE):
+            logger.debug("pdf file is in place and its info file")
+            if os.path.getsize(PDF_FILE) > 0:
+                logger.debug("pdf file has proper size")
+                try:
+                    logger.debug("reading filename from nfo")
+                    with open(NFO_FILE, encoding="utf-8") as f:
+                        name = f.read().strip()
+                except IOError:
+                    logger.debug("invalid filename replaced with ''")
+                    name = ""
+                try:
+                    logger.debug("reading token file")
+                    with open(TOKEN_FILE, encoding="utf-8") as f:
+                        token = f.read().strip()
+                except IOError:
+                    logger.debug("Cannot read token from file")
+                    token = ""
+                if name and token:
+                    logger.debug("file is returned to a client")
+                    with open(PDF_FILE, "rb") as f:
+                        return response(
+                            start_response,
+                            status="200 OK",
+                            body=f.read(),
+                            headers=[("Content-Type", "application/pdf"),
+                             ("Cache-Control", "no-store"),
+                             ("X-Cleanup-Cookie", token),
+                             ("Content-Disposition", f'attachment; filename="{name}.pdf"')]
+                        )
+            logger.debug("file not returned to a client, probably broken")
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
 
         # batch ready
         logger.debug("batch is ready")
@@ -339,6 +417,12 @@ def app(environ, start_response):
                 f.write(token)
             logger.debug("/batch token.file created")
 
+            files = []
+            for i in range(100):
+                f = f"{WORK_DIR}/batch{i:02d}.jpg"
+                if os.path.exists(f):
+                    safe_remove(f)
+
             cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
                 --buffer-size={BUFFER} --output-file={WORK_DIR}/batch00.jpg"
             run_async(cmd)
@@ -355,7 +439,10 @@ def app(environ, start_response):
         if os.path.exists(LOCK_FILE):
             if is_lock_stale():
                 safe_remove(LOCK_FILE, "lock file")
-            return response(start_response, status="202 Accepted")
+                return response(start_response, status="302 Found", headers=[("Location", \
+                    "index.html")])
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "batch.html")])
 
         files = []
         for i in range(100):
@@ -366,77 +453,65 @@ def app(environ, start_response):
                 break
 
         if not files:
-            return response(start_response, status="200 OK")
+            safe_remove(LOCK_FILE, "lock file")
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
 
         if not os.path.exists(NFO_FILE):
             for fn in files:
-                safe_remove(fn, "")
-            return response(start_response, status="200 OK")
+                safe_remove(fn)
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
 
         if files and os.path.getsize(files[-1]) == 0:
             for fn in files:
-                safe_remove(fn, "")
+                safe_remove(fn)
             safe_remove(NFO_FILE, "nfo file")
-            return response(start_response, status="200 OK")
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
+
+        if not acquire_lock():
+            logger.debug("/next lock not acquired, try again")
+            safe_remove(LOCK_FILE, "lock file")
+            for fn in files:
+                safe_remove(fn)
+            safe_remove(NFO_FILE, "nfo file")
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
 
         next_index = len(files)
         output = f"{WORK_DIR}/batch{next_index:02d}.jpg"
-
-        if not acquire_lock():
-            return response(start_response, status="202 Accepted")
 
         cmd = f"{SCANIMAGE} --device-name={DEVICE} --format=jpeg --resolution={RESOLUTION} \
             --buffer-size={BUFFER} --output-file={output}"
         run_async(cmd)
 
-        return response(start_response, status="202 Accepted")
+        return response(start_response, status="302 Found", headers=[("Location", \
+            "batch.html")])
 
     # /done
     if path == "/done":
 
         logger.debug("/done API call triggered")
-        if os.path.exists(LOCK_FILE):
-            if is_lock_stale():
-                safe_remove(LOCK_FILE, "lock file")
-            return response(start_response, status="202 Accepted")
-
-        if os.path.exists(PDF_FILE):
-            if os.path.exists(NFO_FILE):
-                try:
-                    with open(NFO_FILE, encoding="utf-8") as f:
-                        name = f.read().strip()
-                except IOError:
-                    name = ""
-                if name:
-                    with open(PDF_FILE, "rb") as f:
-                        return response(
-                            start_response,
-                            status="200 OK",
-                            body=f.read(),
-                            headers=[("Content-Type", "application/pdf"),
-                             ("Cache-Control", "no-store"),
-                             ("Content-Disposition", f'attachment; filename="{name}.pdf"')]
-                        )
-            try:
-                safe_remove(NFO_FILE, "nfo file")
-                safe_remove(PDF_FILE, "pdf file")
-            except IOError:
-                pass
-            return response(start_response, status="200 OK")
-
         if not acquire_lock():
-            return response(start_response, status="202 Accepted")
+            return response(start_response, status="302 Found", headers=[("Location", \
+                "index.html")])
 
         files = sorted([
             f"{WORK_DIR}/batch{i:02d}.jpg"
             for i in range(100)
             if os.path.exists(f"{WORK_DIR}/batch{i:02d}.jpg")
         ])
+
         file_names = ' '.join(files)
         cmd = f"convert {file_names} {PDF_FILE}"
-        run_async(cmd)
+        run_blocking(cmd)
 
-        return response(start_response, status="202 Accepted")
+        for fn in files:
+            safe_remove(fn)
+
+        return response(start_response, status="302 Found", headers=[("Location", \
+            "batch.html")])
 
     return response(start_response, status="404 Not Found")
 

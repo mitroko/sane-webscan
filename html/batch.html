@@ -1,25 +1,74 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Batch Scan</title>
+  <title>SANE Web scan (batch)</title>
+  <meta charset="UTF-8">
   <script>
     async function pollStatus() {
       try {
-        let res = await fetch('/poll');
+        let res = await fetch('poll');
+
         let status = document.getElementById("status");
 
         if (res.status === 201) {
-            status.innerText = "ready";
-        } else if (res.status === 202) {
-            status.innerText = "in progress";
-        } else {
-            status.innerText = "idle";
+          status.innerText = "ready";
+          return;
         }
+
+        if (res.status === 202) {
+          status.innerText = "in progress";
+          return;
+        }
+
+        if (res.status === 200) {
+          let blob = await res.blob();
+
+          if (blob.size > 0) {
+            // Extract filename from header
+            let disposition = res.headers.get("Content-Disposition");
+            let filename = "scan.pdf";
+
+            if (disposition && disposition.includes("filename=")) {
+              filename = disposition.split("filename=")[1].replace(/"/g, "");
+            }
+
+            // cleanup cookie
+            let cleanupCookie = res.headers.get("X-Cleanup-Cookie");
+
+            // Trigger download
+            let url = window.URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            window.URL.revokeObjectURL(url);
+
+            // call cleanup API
+            if (cleanupCookie) {
+                await fetch('cleanup', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: 'cleaner_token=' + encodeURIComponent(cleanupCookie)
+                });
+            }
+
+            // Redirect after download
+            window.location.href = "index.html";
+            return;
+          }
+        }
+
+        status.innerText = "idle";
+
       } catch (e) {
-          document.getElementById("status").innerText = "error";
+        document.getElementById("status").innerText = "error";
       }
     }
-
     setInterval(pollStatus, 2000);
     window.onload = pollStatus;
   </script>
@@ -30,9 +79,9 @@
       <td align="center" valign="middle">
         <div id="status">checking...</div><br><br>
 
-        <form>
-          <button formaction="/next" formmethod="GET">next</button>
-          <button formaction="/done" formmethod="GET">done</button>
+        <form accept-charset="UTF-8">
+          <button formaction="next" formmethod="GET">next</button>
+          <button formaction="done" formmethod="GET">done</button>
         </form>
       </td>
     </tr>
