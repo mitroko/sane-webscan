@@ -171,6 +171,7 @@ def run_blocking(cmd):
         logger.debug("Blocking call exception: %s", e)
 
 def worker_thread(cmd_list):
+    """Worker thread function that will actually run the code in background"""
     try:
         subprocess.run(
             cmd_list,
