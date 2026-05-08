@@ -1,0 +1,38 @@
+services:
+  uwsgi:
+    image: mitroko/sane-webscan
+    container_name: sane-uwsgi
+    security_opt:
+    - no-new-privileges:true
+    volumes:
+    - /srv/volumes/sane-webscan/uploads:/var/lib/sanewebscan:Z
+    - /srv/volumes/sane-webscan/airscan.conf:/etc/sane.d/airscan.conf:ro,Z
+    - /srv/volumes/sane-webscan/sane.dll.conf:/etc/sane.d/dll.conf:ro,Z
+    - /run/dbus:/run/dbus:ro,Z
+    network_mode: host
+    environment:
+    - WEBSCAN_DEVICE=airscan:w1:M570dw
+    - WEBSCAN_COOLDOWN=5
+    - WEBSCAN_WAIT_TTL=5
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+  web:
+    image: nginx:alpine
+    container_name: sane-web
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8180/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: always
+    network_mode: host
+    volumes:
+    - /srv/volumes/sane-webscan/logs/nginx:/var/log/nginx:Z
+    - /srv/volumes/sane-webscan/nginx.conf:/etc/nginx/nginx.conf:ro,Z
+    - /srv/volumes/sane-webscan/html:/var/www/html/sanewebscan:ro,Z

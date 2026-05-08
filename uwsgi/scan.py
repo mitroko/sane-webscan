@@ -22,23 +22,25 @@ import subprocess
 import unicodedata
 import random
 import string
+import threading
 from wsgiref.simple_server import make_server, WSGIRequestHandler
 
 # Configure your own values here
-WORK_DIR = "/var/lib/sanewebscan"
-BIND_ADDR = "127.0.0.1"
-BIND_PORT = 9080
-APP_ROOT = "/"
-LOCK_FILE = f"{WORK_DIR}/lockfile"
-LOCK_TTL = 300
-SCANIMAGE = '/usr/bin/scanimage'
-DEVICE = 'airscan:e0:HP140w'
-NFO_FILE = f"{WORK_DIR}/filename.nfo"
-TOKEN_FILE = f"{WORK_DIR}/token.file"
-JPG_FILE = f"{WORK_DIR}/scan.jpg"
-PDF_FILE = f"{WORK_DIR}/batch.pdf"
-RESOLUTION = 300
-BUFFER = 512
+WORK_DIR = os.environ.get("WEBSCAN_WORK_DIR", "/var/lib/sanewebscan")
+BIND_ADDR = os.environ.get("WEBSCAN_BIND_ADDR", "127.0.0.1")
+BIND_PORT = os.environ.get("WEBSCAN_BIND_PORT", 9080)
+LOCK_FILE = os.environ.get("WEBSCAN_LOCK_FILE", f"{WORK_DIR}/lockfile")
+LOCK_TTL = os.environ.get("WEBSCAN_LOCK_TTL", 300)
+WAIT_TTL = os.environ.get("WEBSCAN_WAIT_TTL", 0)
+COOLDOWN = os.environ.get("WEBSCAN_COOLDOWN", 0)
+SCANIMAGE = os.environ.get("WEBSCAN_SCANIMAGE", "/usr/bin/scanimage")
+DEVICE = os.environ.get("WEBSCAN_DEVICE", "airscan:e0:saneweb")
+NFO_FILE = os.environ.get("WEBSCAN_NFO_FILE", f"{WORK_DIR}/filename.nfo")
+TOKEN_FILE = os.environ.get("WEBSCAN_TOKEN_FILE", f"{WORK_DIR}/token.file")
+JPG_FILE = os.environ.get("WEBSCAN_JPG_FILE", f"{WORK_DIR}/scan.jpg")
+PDF_FILE = os.environ.get("WEBSCAN_PDF_FILE", f"{WORK_DIR}/batch.pdf")
+RESOLUTION = os.environ.get("WEBSCAN_RESOLUTION", 300)
+BUFFER = os.environ.get("WEBSCAN_BUFFER", 512)
 
 
 logging.basicConfig(
@@ -168,35 +170,33 @@ def run_blocking(cmd):
     except BrokenPipeError as e:
         logger.debug("Blocking call exception: %s", e)
 
+def worker_thread(cmd_list):
+    try:
+        subprocess.run(
+            cmd_list,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+
+        logger.debug("Scanning complete, Cooldown %s seconds", COOLDOWN)
+        time.sleep(float(COOLDOWN))
+
+    except subprocess.CalledProcessError as e:
+        logger.exception("scanimage failed: %s", e)
+    finally:
+        safe_remove(LOCK_FILE, "lock file")
+
 def run_async(cmd):
     """Perform asynchronous process call. Fire and forget"""
     logger.debug("Executing: %s", cmd)
-    try:
-        proc = subprocess.Popen(
-            cmd.split(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True
-        )
-        logger.debug("Popen executed")
-    except ChildProcessError as e:
-        logger.debug("Popen exception: %s", e)
-        safe_remove(LOCK_FILE, "lock file")
+    t = threading.Thread(
+        target=worker_thread,
+        args=(cmd.split(),),
+        daemon=True
+    )
 
-    pid = os.fork()
-    if pid == 0:
-        try:
-            logger.debug("Proc communication started")
-            stdout, stderr = proc.communicate()
-            if proc.returncode == 0:
-                logger.debug("Subprocess call [stdout]: %s", stdout.decode("utf-8"))
-                safe_remove(LOCK_FILE, "lock file")
-                logger.debug("Exit code 0 lock released")
-            else:
-                logger.debug("Subprocess call [stderr]: %s lock released", stderr.decode("utf-8"))
-                safe_remove(LOCK_FILE, "lock file")
-        finally:
-            os._exit(0)
+    t.start()
 
 def safe_remove(fp, comment=""):
     """Check if file exists and remove it"""
@@ -349,18 +349,19 @@ def app(environ, start_response):
             if files and os.path.getsize(files[-1]) > 0:
                 return response(start_response, status="201 Created")
 
-        # cleanup
-        logger.debug("Failover cleanup phase")
-        safe_remove(TOKEN_FILE, "token file")
-        safe_remove(NFO_FILE, "nfo file")
-        safe_remove(JPG_FILE, "jpg file")
-        safe_remove(PDF_FILE, "pdf file")
-        for i in range(100):
-            cur_file = f"{WORK_DIR}/batch{i:02d}.jpg"
-            if os.path.exists(cur_file):
-                safe_remove(cur_file, "")
+            # cleanup
+            if (time.time() - os.path.getmtime(NFO_FILE)) > float(WAIT_TTL):
+                logger.debug("Failover cleanup phase")
+                safe_remove(TOKEN_FILE, "token file")
+                safe_remove(NFO_FILE, "nfo file")
+                safe_remove(JPG_FILE, "jpg file")
+                safe_remove(PDF_FILE, "pdf file")
+                for i in range(100):
+                    cur_file = f"{WORK_DIR}/batch{i:02d}.jpg"
+                    if os.path.exists(cur_file):
+                        safe_remove(cur_file, "")
 
-        logger.debug("Cleanup phase completed")
+                logger.debug("Cleanup phase completed")
         return response(start_response, status="200 OK")
 
     # /scan
